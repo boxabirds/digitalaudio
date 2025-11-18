@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Square Wave via Sine Additive Synthesis</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <main>
+      <header>
+        <h1>Building a Square Wave from Sine Waves</h1>
+        <p>
+          Toggle partials to hear and see how summing harmonics of a 220&nbsp;Hz
+          sine wave approaches a square wave. The sum trace (top) updates live.
+        </p>
+      </header>
+
+      <section id="audio-controls">
+        <button id="start-audio">Start Audio</button>
+        <button id="toggle-play" disabled>Play</button>
+        <label class="master-gain">
+          Master level
+          <input type="range" id="master-gain" min="0" max="1" step="0.01" value="0.35" />
+        </label>
+        <button id="apply-square-defaults" disabled>Square Series Defaults</button>
+        <button id="reset-fundamental" disabled>Fundamental Only</button>
+        <div class="square-builder-controls">
+          <button id="square-builder-start" disabled>Animate Square Build</button>
+          <label>
+            Seconds / odd
+            <input type="number" id="square-step-duration" min="0.1" step="0.1" value="1" />
+          </label>
+          <label>
+            Odd harmonics
+            <input type="number" id="square-odd-count" min="1" max="32" step="1" value="32" />
+          </label>
+        </div>
+      </section>
+
+      <section id="visualisation">
+        <div class="sum-row">
+          <div class="row-header">
+            <h2>Composite Wave</h2>
+            <p class="legend"><span class="sum-line"></span> Sum &nbsp; <span class="square-line"></span> Ideal square</p>
+          </div>
+          <canvas id="sum-canvas" width="900" height="220"></canvas>
+        </div>
+      </section>
+
+      <section id="partials">
+        <div class="partials-header">
+          <h2>Harmonic Partials (64)</h2>
+          <p>
+            Each row is a sine oscillator at a multiple of the base frequency (220 Hz).
+            Odd harmonics default to their square-series amplitude; even harmonics start muted.
+          </p>
+        </div>
+        <div id="partials-list"></div>
+      </section>
+    </main>
+    <script src="main.js" type="module"></script>
+  </body>
+</html>

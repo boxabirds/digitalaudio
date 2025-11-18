@@ -1,0 +1,394 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Radial Impulse → Spherical Wavefront</title>
+  <style>
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+    body {
+      font-family: system-ui, -apple-system, sans-serif;
+      padding: 16px;
+      background: #0a0a0a;
+      color: #e0e0e0;
+    }
+    h1 {
+      margin-bottom: 16px;
+      font-size: 24px;
+    }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/framer-motion@11/dist/framer-motion.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+  <script type="text/babel">
+    const { useState, useRef, useEffect, useMemo, useCallback } = React;
+    const { useAnimationFrame } = Motion;
+
+    function RadialImpulse({ cols = 56, rows = 32 }) {
+      const width = 900;
+      const height = 680;
+      const left = 60, right = width - 60;
+      const top = 60, bottom = 420;
+
+      // Controls
+      const [running, setRunning] = useState(true);
+      const [c, setC] = useState(0.22);
+      const [gamma, setGamma] = useState(0.008);
+      const [impulseMag, setImpulseMag] = useState(8);
+      const [dispScale, setDispScale] = useState(4);
+
+      const baseW = cols, baseH = rows;
+      const [density, setDensity] = useState(1.0);
+      const W = useMemo(() => Math.max(12, Math.min(140, Math.round(baseW * density))), [baseW, density]);
+      const H = useMemo(() => Math.max(8, Math.min(90, Math.round(baseH * density))), [baseH, density]);
+
+      const size = W * H;
+      const u = useRef(new Float32Array(size));
+      const up = useRef(new Float32Array(size));
+      const un = useRef(new Float32Array(size));
+      const absorbMask = useRef(new Float32Array(size));
+
+      const [selX, setSelX] = useState(-1);
+      const [selY, setSelY] = useState(-1);
+
+      useEffect(() => {
+        setSelX((prev) => {
+          const defX = Math.max(0, Math.min(W - 1, Math.floor(W * 0.75)));
+          const x = prev < 0 ? defX : prev;
+          return Math.max(0, Math.min(W - 1, x));
+        });
+        setSelY((prev) => {
+          const defY = Math.max(0, Math.min(H - 1, Math.floor(H * 0.5)));
+          const y = prev < 0 ? defY : prev;
+          return Math.max(0, Math.min(H - 1, y));
+        });
+      }, [W, H]);
+
+      useEffect(() => {
+        u.current = new Float32Array(size);
+        up.current = new Float32Array(size);
+        un.current = new Float32Array(size);
+        absorbMask.current = new Float32Array(size);
+
+        const margin = Math.floor(Math.min(W, H) * 0.2) || 6;
+        const maxAbsorb = 0.6;
+        const mask = absorbMask.current;
+        for (let y = 0; y < H; y++) {
+          for (let x = 0; x < W; x++) {
+            const dEdge = Math.min(x, W - 1 - x, y, H - 1 - y);
+            let a = 0;
+            if (dEdge < margin) {
+              const t = 1 - dEdge / margin;
+              a = maxAbsorb * (t * t);
+            }
+            mask[y * W + x] = a;
+          }
+        }
+      }, [W, H, size]);
+
+      const idx = (x, y) => y * W + x;
+
+      const integrate = useCallback(() => {
+        const uu = u.current, prev = up.current, next = un.current;
+        const c2 = c * c;
+        for (let y = 1; y < H - 1; y++) {
+          const yW = y * W;
+          for (let x = 1; x < W - 1; x++) {
+            const i = yW + x;
+            const lap = uu[i-1] + uu[i+1] + uu[i-W] + uu[i+W] - 4 * uu[i];
+            const vel = uu[i] - prev[i];
+            const localGamma = gamma + absorbMask.current[i];
+            next[i] = 2 * uu[i] - prev[i] + c2 * lap - localGamma * vel;
+          }
+        }
+
+        const edgeDamp = 0.2;
+        for (let x = 0; x < W; x++) {
+          next[x] = next[x + W] * edgeDamp;
+          next[(H-1)*W + x] = next[(H-2)*W + x] * edgeDamp;
+        }
+        for (let y = 0; y < H; y++) {
+          next[y*W] = next[y*W + 1] * edgeDamp;
+          next[y*W + (W-1)] = next[y*W + (W-2)] * edgeDamp;
+        }
+
+        up.current = u.current;
+        u.current = un.current;
+        un.current = prev;
+      }, [W, H, c, gamma]);
+
+      const [frameToggle, setFrameToggle] = useState(0);
+      const startTimeRef = useRef(typeof performance !== 'undefined' ? performance.now() : 0);
+      const nowRef = useRef(0);
+      const timeBuf = useRef([]);
+      const valBuf = useRef([]);
+      const [windowSec, setWindowSec] = useState(2.0);
+      const [bits, setBits] = useState(3);
+      const [sampleHz, setSampleHz] = useState(2.0);
+      const nextSampleTimeRef = useRef(0);
+      const sampTimesRef = useRef([]);
+      const sampValsRef = useRef([]);
+
+      useAnimationFrame(() => {
+        if (!running) return;
+        integrate();
+
+        const i = Math.max(0, Math.min(W * H - 1, selY * W + selX));
+        const uu = u.current;
+        let gx = 0;
+        if (selX > 0 && selX < W - 1) gx = (uu[i+1] - uu[i-1]) * 0.5;
+        const dx = dispScale * gx;
+        const t = ((typeof performance !== 'undefined' ? performance.now() : Date.now()) - startTimeRef.current) / 1000;
+        nowRef.current = t;
+        timeBuf.current.push(t);
+        valBuf.current.push(dx);
+        const cutoff = t - windowSec;
+        while (timeBuf.current.length && timeBuf.current[0] < cutoff - 0.05) {
+          timeBuf.current.shift();
+          valBuf.current.shift();
+        }
+
+        const period = 1 / Math.max(1, sampleHz);
+        if (nextSampleTimeRef.current === 0) nextSampleTimeRef.current = t;
+        while (t >= nextSampleTimeRef.current) {
+          sampTimesRef.current.push(nextSampleTimeRef.current);
+          sampValsRef.current.push(dx);
+          nextSampleTimeRef.current += period;
+        }
+        while (sampTimesRef.current.length && sampTimesRef.current[0] < cutoff - 0.05) {
+          sampTimesRef.current.shift();
+          sampValsRef.current.shift();
+        }
+        setFrameToggle((t) => (t ^ 1));
+      });
+
+      const triggerImpulse = useCallback((mx, my) => {
+        const cx = Math.min(W-3, Math.max(2, mx ?? Math.floor(W/2)));
+        const cy = Math.min(H-3, Math.max(2, my ?? Math.floor(H/2)));
+        const weights = [0.25, 0.6, 1.0, 0.6, 0.25];
+        for (let dy = -2; dy <= 2; dy++) {
+          for (let dx = -2; dx <= 2; dx++) {
+            const w = weights[dx+2] * weights[dy+2];
+            const i = idx(cx+dx, cy+dy);
+            u.current[i] += impulseMag * w;
+            up.current[i] += impulseMag * w;
+          }
+        }
+      }, [W, H, impulseMag]);
+
+      const X0 = useMemo(() => Array.from({ length: W }, (_, x) => left + (x / (W-1)) * (right - left)), [W]);
+      const Y0 = useMemo(() => Array.from({ length: H }, (_, y) => top + (y / (H-1)) * (bottom - top)), [H]);
+
+      const handleSelect = (e) => {
+        const rect = e.currentTarget.getBoundingClientRect();
+        const sx = width / rect.width;
+        const sy = height / rect.height;
+        const xSvg = (e.clientX - rect.left) * sx;
+        const ySvg = (e.clientY - rect.top) * sy;
+        if (xSvg < left || xSvg > right || ySvg < top || ySvg > bottom) return;
+        const cellW = (right - left) / Math.max(1, W - 1);
+        const cellH = (bottom - top) / Math.max(1, H - 1);
+        const ix = Math.round((xSvg - left) / cellW);
+        const iy = Math.round((ySvg - top) / cellH);
+        setSelX(Math.max(0, Math.min(W - 1, ix)));
+        setSelY(Math.max(0, Math.min(H - 1, iy)));
+      };
+
+      return (
+        <div style={{ display: 'grid', gap: 12 }}>
+          <h1>Radial Impulse → Spherical Wavefront</h1>
+          <svg viewBox={`0 0 ${width} ${height}`} width="100%" style={{ background: '#0f0f0f', borderRadius: 8 }} onClick={handleSelect}>
+            <text x={left} y={top - 18} fill="#aaa" fontSize={12} fontFamily="system-ui">Press "Impulse (center)" to emit from the source</text>
+
+            {Y0.map((yy, y) => (
+              <g key={y}>
+                {X0.map((xx, x) => {
+                  const i = y * W + x;
+                  const uu = u.current;
+                  let gx = 0, gy = 0;
+                  if (x > 0 && x < W - 1) gx = (uu[i+1] - uu[i-1]) * 0.5;
+                  if (y > 0 && y < H - 1) gy = (uu[i+W] - uu[i-W]) * 0.5;
+                  const px = xx + dispScale * gx;
+                  const py = yy + dispScale * gy;
+                  const uval = uu[i];
+                  const a = Math.max(0, Math.min(1, Math.abs(uval) / (impulseMag * 1.2)));
+                  const compress = uval > 0 ? a : 0;
+                  const rare = uval < 0 ? a : 0;
+                  let r = Math.round(120 + 100 * compress);
+                  let g = Math.round(200 - 60 * (compress + rare) * 0.5);
+                  let b = Math.round(255 - 140 * compress - 100 * rare);
+                  if (x === selX && y === selY) { r = 240; g = 60; b = 60; }
+                  const fill = `rgb(${r},${g},${b})`;
+                  return <circle key={x} cx={px} cy={py} r={3} fill={fill} />;
+                })}
+              </g>
+            ))}
+
+            <text x={X0[Math.floor(W/2)]} y={Y0[Math.floor(H/2)] + 8} fontSize={24} textAnchor="middle" dominantBaseline="middle">🧑</text>
+
+            {/* Rarefaction zoom and sampling panels */}
+            {(() => {
+              const i = Math.max(0, Math.min(W * H - 1, selY * W + selX));
+              const uu = u.current;
+              let gx = 0, gy = 0;
+              if (selX > 0 && selX < W - 1) gx = (uu[i+1] - uu[i-1]) * 0.5;
+              if (selY > 0 && selY < H - 1) gy = (uu[i+W] - uu[i-W]) * 0.5;
+              const dx = dispScale * gx;
+              const dy = dispScale * gy;
+              const panelTop = bottom + 40;
+              const panelBottom = panelTop + 160;
+              const splitX = (left + right) / 2;
+              const panelLeft = left;
+              const panelRight = splitX - 10;
+              const cx = (panelLeft + panelRight) / 2;
+              const cy = (panelTop + panelBottom) / 2;
+              const zoom = 10;
+              const zx = cx + dx * zoom;
+              const zy = cy + dy * zoom;
+
+              return (
+                <g>
+                  <rect x={panelLeft} y={panelTop} width={panelRight - panelLeft} height={panelBottom - panelTop} rx={8} fill="#101010" stroke="#2a2a2a" />
+                  <line x1={panelLeft} y1={cy} x2={panelRight} y2={cy} stroke="#2a2a2a" />
+                  <line x1={cx} y1={panelTop} x2={cx} y2={panelBottom} stroke="#2a2a2a" />
+                  <text x={cx + 6} y={panelTop + 12} fill="#666" fontSize={12}>y</text>
+                  <text x={panelRight - 14} y={cy - 6} fill="#666" fontSize={12}>x</text>
+                  <circle cx={cx} cy={cy} r={2} fill="#555" />
+                  <circle cx={zx} cy={zy} r={15} fill="rgb(240,60,60)" />
+                  <text x={panelLeft + 10} y={panelTop + 16} fill="#aaa" fontSize={12} fontFamily="system-ui">Rarefaction zoom — middle red particle</text>
+
+                  {(() => {
+                    const sTop = panelTop;
+                    const sBottom = panelBottom;
+                    const sMidY = (sTop + sBottom) / 2;
+                    const now = nowRef.current;
+                    const t0 = now - windowSec;
+                    const sLeftAll = splitX + 10;
+                    const sRightAll = right;
+                    const sMidX = (sLeftAll + sRightAll) / 2;
+                    const anaLeft = sLeftAll;
+                    const anaRight = sMidX - 6;
+                    const digLeft = sMidX + 6;
+                    const digRight = sRightAll;
+
+                    const halfRange = (sBottom - sTop) * 0.4;
+                    const pts = [];
+                    for (let k = 0; k < timeBuf.current.length; k++) {
+                      const tt = timeBuf.current[k];
+                      if (tt < t0) continue;
+                      const x = anaLeft + ((tt - t0) / windowSec) * (anaRight - anaLeft);
+                      const y = sMidY + Math.max(-halfRange, Math.min(halfRange, valBuf.current[k] * 10));
+                      pts.push(`${x.toFixed(2)},${y.toFixed(2)}`);
+                    }
+                    const nowY = sMidY + (valBuf.current.length ? Math.max(-halfRange, Math.min(halfRange, valBuf.current[valBuf.current.length - 1] * 10)) : 0);
+
+                    const steps = Math.max(2, Math.min(256, 1 << bits));
+                    const levels = Array.from({ length: steps }, (_, i) => -0.75 + (1.75 * i) / (steps - 1));
+
+                    return (
+                      <g>
+                        <rect x={digLeft} y={sTop} width={digRight - digLeft} height={sBottom - sTop} rx={8} fill="#101010" stroke="#2a2a2a" />
+                        {levels.map((lvl, idx) => {
+                          const y = sMidY - lvl * halfRange;
+                          return (
+                            <g key={idx}>
+                              <line x1={digLeft} y1={y} x2={digRight} y2={y} stroke="#2a2a2a" />
+                              <line x1={digLeft} y1={y} x2={digLeft+6} y2={y} stroke="#666" />
+                            </g>
+                          );
+                        })}
+                        <text x={digLeft + 6} y={sMidY - 8} fill="#666" fontSize={12}>amplitude</text>
+                        <text x={digLeft + 6} y={sTop + 12} fill="#666" fontSize={12}>{`${Math.max(0, t0).toFixed(1)}s`}</text>
+
+                        {sampTimesRef.current.map((tt, k) => {
+                          if (tt < t0) return null;
+                          const x = digLeft + ((tt - t0) / windowSec) * (digRight - digLeft);
+                          const raw = sampValsRef.current[k] * 10;
+                          const norm = Math.max(-1, Math.min(1, raw / halfRange));
+                          let q = levels[0];
+                          let minErr = Infinity;
+                          for (const lv of levels) {
+                            const err = Math.abs(norm - lv);
+                            if (err < minErr) {
+                              minErr = err;
+                              q = lv;
+                            }
+                          }
+                          const y = sMidY - q * halfRange;
+                          return (
+                            <g key={k}>
+                              <line x1={x} y1={sTop} x2={x} y2={sBottom} stroke="#1f1f1f" />
+                              <circle cx={x} cy={y} r={2.5} fill="rgb(240,60,60)" />
+                            </g>
+                          );
+                        })}
+
+                        <rect x={anaLeft} y={sTop} width={anaRight - anaLeft} height={sBottom - sTop} rx={8} fill="#101010" stroke="#2a2a2a" />
+                        <line x1={anaLeft} y1={sMidY} x2={anaRight} y2={sMidY} stroke="#2a2a2a" />
+                        <line x1={anaRight} y1={sTop} x2={anaRight} y2={sBottom} stroke="#2a2a2a" />
+                        <text x={anaRight - 26} y={sTop + 12} fill="#666" fontSize={12}>now</text>
+                        <text x={anaLeft + 6} y={sMidY - 8} fill="#666" fontSize={12}>amplitude</text>
+                        <polyline points={pts.join(' ')} fill="none" stroke="#6ec1ff" strokeWidth={2} />
+                        <circle cx={anaRight - 1} cy={nowY} r={3.5} fill="rgb(240,60,60)" />
+                      </g>
+                    );
+                  })()}
+                </g>
+              );
+            })()}
+          </svg>
+
+          <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
+            <button onClick={() => setRunning((v) => !v)}>{running ? 'Pause' : 'Play'}</button>
+            <button onClick={() => triggerImpulse()}>Impulse (center)</button>
+            <button onClick={() => { u.current.fill(0); up.current.fill(0); un.current.fill(0); }}>Reset</button>
+            <label>Particle density
+              <input type="range" min={0.5} max={2.0} step={0.1} value={density}
+                     onChange={(e)=> setDensity(Number(e.target.value))} />
+              <span style={{ marginLeft: 6 }}>{density.toFixed(1)}×</span>
+            </label>
+            <label>Impulse intensity
+              <input type="range" min={2} max={30} step={1} value={impulseMag} onChange={(e)=> setImpulseMag(Number(e.target.value))} />
+              <span style={{ marginLeft: 6 }}>{impulseMag.toFixed(0)}</span>
+            </label>
+            <label>c (speed)
+              <input type="range" min={0.08} max={0.35} step={0.005} value={c} onChange={(e)=> setC(Number(e.target.value))} />
+              <span style={{ marginLeft: 6 }}>{c.toFixed(3)}</span>
+            </label>
+            <label>γ (damping)
+              <input type="range" min={0} max={0.03} step={0.001} value={gamma} onChange={(e)=> setGamma(Number(e.target.value))} />
+              <span style={{ marginLeft: 6 }}>{gamma.toFixed(3)}</span>
+            </label>
+            <label>Displacement scale
+              <input type="range" min={1} max={8} step={0.5} value={dispScale} onChange={(e)=> setDispScale(Number(e.target.value))} />
+              <span style={{ marginLeft: 6 }}>{dispScale.toFixed(1)}px</span>
+            </label>
+            <label>Sample rate
+              <input type="range" min={1} max={30} step={0.5} value={sampleHz} onChange={(e)=> setSampleHz(Number(e.target.value))} />
+              <span style={{ marginLeft: 6 }}>{sampleHz.toFixed(1)} Hz</span>
+            </label>
+            <label>Resolution (bits)
+              <input type="range" min={1} max={8} step={1} value={bits} onChange={(e)=> setBits(Number(e.target.value))} />
+              <span style={{ marginLeft: 6 }}>{bits} bit</span>
+            </label>
+            <span style={{ color: '#777' }}>Radial pressure pulse; particles move along ∇pressure (longitudinal motion).</span>
+          </div>
+        </div>
+      );
+    }
+
+    const root = ReactDOM.createRoot(document.getElementById('root'));
+    root.render(<RadialImpulse />);
+  </script>
+</body>
+</html>
